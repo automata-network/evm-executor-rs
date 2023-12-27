@@ -2,8 +2,8 @@ use std::{prelude::v1::*, time::Instant};
 
 use base::format::debug;
 use eth_types::{
-    BlockHeaderTrait, FetchState, FetchStateResult, Signer, TransactionAccessTuple, TxTrait, SH256,
-    SU64, ReceiptTrait,
+    BlockHeaderTrait, FetchState, FetchStateResult, ReceiptTrait, Signer, TransactionAccessTuple,
+    TxTrait, SH256, SU64,
 };
 use statedb::StateDB;
 use std::borrow::Cow;
@@ -12,7 +12,6 @@ use std::sync::Arc;
 use crate::{Context, ExecuteError, ExecuteResult, PrecompileSet, TxExecutor};
 
 pub trait Engine {
-    type StateDB: StateDB;
     type Transaction: TxTrait;
     type BlockHeader: BlockHeaderTrait;
     type Receipt: ReceiptTrait;
@@ -20,7 +19,6 @@ pub trait Engine {
     type Block;
     type NewBlockContext;
     fn signer(&self) -> Signer;
-    fn statedb(&mut self) -> &mut Self::StateDB;
     fn evm_config(&self) -> evm::Config;
     fn precompile(&self) -> PrecompileSet;
     fn new_block_header(
@@ -36,12 +34,14 @@ pub trait Engine {
         header: &Self::BlockHeader,
     ) -> Self::Receipt;
     fn tx_context<'a>(&self, ctx: &mut Context<'a, Self::Transaction, Self::BlockHeader>);
-    fn process_withdrawals(
+    fn process_withdrawals<D: StateDB>(
         &mut self,
+        statedb: &mut D,
         withdrawals: &[Self::Withdrawal],
     ) -> Result<(), statedb::Error>;
-    fn finalize_block(
+    fn finalize_block<D: StateDB>(
         &mut self,
+        statedb: &mut D,
         header: Self::BlockHeader,
         txs: Vec<Arc<Self::Transaction>>,
         receipts: Vec<Self::Receipt>,
@@ -49,9 +49,10 @@ pub trait Engine {
     ) -> Result<Self::Block, String>;
 }
 
-pub struct BlockBuilder<E: Engine, P> {
+pub struct BlockBuilder<E: Engine, D: StateDB, P> {
     engine: E,
     header: E::BlockHeader,
+    statedb: D,
     signer: Signer,
 
     evm_cfg: evm::Config,
@@ -65,15 +66,22 @@ pub struct BlockBuilder<E: Engine, P> {
     withdrawals: Option<Vec<E::Withdrawal>>,
 }
 
-impl<E, P> BlockBuilder<E, P>
+impl<E, D, P> BlockBuilder<E, D, P>
 where
     E: Engine,
+    D: StateDB,
 {
-    pub fn new(engine: E, prefetcher: P, header: E::BlockHeader) -> BlockBuilder<E, P> {
+    pub fn new(
+        engine: E,
+        statedb: D,
+        prefetcher: P,
+        header: E::BlockHeader,
+    ) -> BlockBuilder<E, D, P> {
         let gas_pool = header.gas_limit().as_u64();
         BlockBuilder {
             signer: engine.signer(),
             evm_cfg: engine.evm_config(),
+            statedb,
             precompile: engine.precompile(),
             engine,
             header,
@@ -95,17 +103,20 @@ where
     }
 
     pub fn truncate_and_revert(&mut self, tx_len: usize, state_root: SH256) {
-        let refund_gases: Vec<_> = self.receipts[tx_len..].iter().map(|receipt| receipt.gas_used().as_u64()).collect();
+        let refund_gases: Vec<_> = self.receipts[tx_len..]
+            .iter()
+            .map(|receipt| receipt.gas_used().as_u64())
+            .collect();
         for gas in refund_gases {
             self.refund_gas(gas);
         }
         self.txs.truncate(tx_len);
         self.receipts.truncate(tx_len);
-        self.engine.statedb().revert(state_root);
+        self.statedb.revert(state_root);
     }
 
     pub fn flush_state(&mut self) -> Result<SH256, statedb::Error> {
-        self.engine.statedb().flush()
+        self.statedb.flush()
     }
 
     pub fn commit(&mut self, tx: Arc<E::Transaction>) -> Result<&E::Receipt, CommitError> {
@@ -139,9 +150,13 @@ where
     pub fn finalize(mut self) -> Result<E::Block, String> {
         let state_root = self.flush_state().map_err(debug)?;
         self.header.set_state_root(state_root);
-        let blk =
-            self.engine
-                .finalize_block(self.header, self.txs, self.receipts, self.withdrawals)?;
+        let blk = self.engine.finalize_block(
+            &mut self.statedb,
+            self.header,
+            self.txs,
+            self.receipts,
+            self.withdrawals,
+        )?;
         Ok(blk)
     }
 
@@ -170,7 +185,7 @@ where
             difficulty: 0.into(),
         };
         self.engine.tx_context(&mut ctx);
-        let state_db = self.engine.statedb();
+        let state_db = &mut self.statedb;
         let result = TxExecutor::new(ctx, state_db)
             .execute()
             .map_err(|err| CommitError::Execute(err))?;
@@ -178,16 +193,18 @@ where
     }
 
     pub fn withdrawal(&mut self, withdrawals: Vec<E::Withdrawal>) -> Result<(), statedb::Error> {
-        self.engine.process_withdrawals(&withdrawals)?;
+        self.engine
+            .process_withdrawals(&mut self.statedb, &withdrawals)?;
         self.withdrawals = Some(withdrawals);
         Ok(())
     }
 }
 
-impl<E, P> BlockBuilder<E, P>
+impl<E, D, P> BlockBuilder<E, D, P>
 where
     E: Engine,
     P: StatePrefetcher,
+    D: StateDB,
 {
     pub fn prefetch<'a, I>(&mut self, list: I) -> Result<usize, statedb::Error>
     where
@@ -201,8 +218,7 @@ where
                 code: None,
             };
             let missing_state = self
-                .engine
-                .statedb()
+                .statedb
                 .check_missing_state(&item.address, &item.storage_keys)?;
             if missing_state.account {
                 fetch.code = Some(item.address);
@@ -224,7 +240,7 @@ where
         }
         if out.len() > 0 {
             let result = self.prefetcher.prefetch(&out)?;
-            self.engine.statedb().apply_states(result)?;
+            self.statedb.apply_states(result)?;
         }
         Ok(out.len())
     }

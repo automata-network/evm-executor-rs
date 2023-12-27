@@ -11,15 +11,14 @@ use std::sync::Arc;
 use crate::{Context, Engine, ExecuteResult, PrecompileSet};
 
 #[derive(Clone, Debug)]
-pub struct Ethereum<D: StateDB> {
-    db: D,
+pub struct Ethereum {
     signer: Signer,
 }
 
-impl<D: StateDB> Ethereum<D> {
-    pub fn new(chain_id: SU256, db: D) -> Self {
+impl Ethereum {
+    pub fn new(chain_id: SU256) -> Self {
         let signer = Signer::new(chain_id);
-        Self { db, signer }
+        Self { signer }
     }
 }
 
@@ -32,11 +31,10 @@ pub struct ConsensusBlockInfo {
     pub coinbase: SH160,
 }
 
-impl<D: StateDB> Engine for Ethereum<D> {
+impl Engine for Ethereum {
     type BlockHeader = BlockHeader;
     type Transaction = TransactionInner;
     type Receipt = Receipt;
-    type StateDB = D;
     type Withdrawal = Withdrawal;
     type Block = Block;
     type NewBlockContext = ConsensusBlockInfo;
@@ -65,10 +63,6 @@ impl<D: StateDB> Engine for Ethereum<D> {
             difficulty: 0u64.into(),
             ..Default::default()
         }
-    }
-
-    fn statedb(&mut self) -> &mut Self::StateDB {
-        &mut self.db
     }
 
     fn evm_config(&self) -> evm::Config {
@@ -115,30 +109,31 @@ impl<D: StateDB> Engine for Ethereum<D> {
         receipt
     }
 
-    fn process_withdrawals(
+    fn process_withdrawals<D: StateDB>(
         &mut self,
+        statedb: &mut D,
         withdrawals: &[Self::Withdrawal],
     ) -> Result<(), statedb::Error> {
         for withdrawal in withdrawals {
             let amount = withdrawal.amount.as_u256() * eth_types::gwei();
-            self.db.add_balance(&withdrawal.address, &amount.into())?;
+            statedb.add_balance(&withdrawal.address, &amount.into())?;
         }
         Ok(())
     }
 
-    fn finalize_block(
+    fn finalize_block<D: StateDB>(
         &mut self,
-        mut header: Self::BlockHeader,
+        statedb: &mut D,
+        header: Self::BlockHeader,
         txs: Vec<Arc<Self::Transaction>>,
         receipts: Vec<Self::Receipt>,
         withdrawals: Option<Vec<Self::Withdrawal>>,
     ) -> Result<Self::Block, String> {
-        header.state_root = self.statedb().flush().map_err(debug)?;
         Ok(Block::new(header, txs, &receipts, withdrawals))
     }
 }
 
-impl<D: StateDB> Ethereum<D> {
+impl Ethereum {
     pub fn calc_gas_limit(parent_gas_limit: u64, mut desired_limit: u64) -> u64 {
         const GAS_LIMIT_BOUND_DIVISOR: u64 = 1024;
         const MIN_GAS_LIMIT: u64 = 5000;

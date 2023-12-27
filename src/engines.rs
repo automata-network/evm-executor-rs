@@ -8,7 +8,7 @@ use eth_types::{
 use statedb::StateDB;
 use std::sync::Arc;
 
-use crate::{Context, Engine, ExecuteResult, PrecompileSet};
+use crate::{Engine, ExecuteResult, PrecompileSet, TxContext};
 
 #[derive(Clone, Debug)]
 pub struct Ethereum {
@@ -65,6 +65,10 @@ impl Engine for Ethereum {
         }
     }
 
+    fn author(&self, header: &Self::BlockHeader) -> Result<Option<SH160>, String> {
+        Ok(Some(header.miner))
+    }
+
     fn evm_config(&self) -> evm::Config {
         evm::Config::shanghai()
     }
@@ -77,13 +81,14 @@ impl Engine for Ethereum {
         self.signer.clone()
     }
 
-    fn tx_context<'a>(&self, ctx: &mut Context<'a, Self::Transaction, Self::BlockHeader>) {
+    fn tx_context<'a>(&self, ctx: &mut TxContext<'a, Self::Transaction, Self::BlockHeader>) {
         ctx.block_base_fee = ctx.header.base_fee_per_gas;
         ctx.miner = Some(ctx.header.miner);
     }
 
     fn build_receipt(
         &self,
+        cumulative_gas_used: u64,
         result: &ExecuteResult,
         tx_idx: usize,
         tx: &Self::Transaction,
@@ -95,7 +100,7 @@ impl Engine for Ethereum {
             transaction_index: (tx_idx as u64).into(),
             r#type: Some(tx.ty().into()),
             gas_used: result.used_gas.into(),
-            cumulative_gas_used: header.gas_used + SU64::from(result.used_gas),
+            cumulative_gas_used: (cumulative_gas_used + result.used_gas).into(),
             logs: result.logs.clone(),
             logs_bloom: HexBytes::new(),
 

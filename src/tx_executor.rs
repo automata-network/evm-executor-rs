@@ -10,11 +10,11 @@ use statedb::StateDB;
 use std::cmp::Ordering;
 use std::time::Instant;
 
-use crate::{Context, ExecuteError, ExecuteResult, StateProxy};
+use crate::{TxContext, ExecuteError, ExecuteResult, StateProxy};
 
 #[derive(Debug)]
 pub struct TxExecutor<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> {
-    ctx: Context<'a, T, B>,
+    ctx: TxContext<'a, T, B>,
     state_db: &'a mut D,
     initial_gas: u64,
     gas: u64,
@@ -27,7 +27,7 @@ where
     T: TxTrait,
     B: BlockHeaderTrait,
 {
-    pub fn new(ctx: Context<'a, T, B>, state_db: &'a mut D) -> Self {
+    pub fn new(ctx: TxContext<'a, T, B>, state_db: &'a mut D) -> Self {
         let gas_price = ctx.tx.gas_price(ctx.header.base_fee());
         Self {
             ctx,

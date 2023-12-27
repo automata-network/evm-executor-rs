@@ -3,13 +3,13 @@ use std::{prelude::v1::*, time::Instant};
 use base::format::debug;
 use eth_types::{
     BlockHeaderTrait, FetchState, FetchStateResult, ReceiptTrait, Signer, TransactionAccessTuple,
-    TxTrait, SH256, SU64,
+    TxTrait, SH160, SH256, SU64,
 };
 use statedb::StateDB;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::{Context, ExecuteError, ExecuteResult, PrecompileSet, TxExecutor};
+use crate::{ExecuteError, ExecuteResult, PrecompileSet, TxContext, TxExecutor};
 
 pub trait Engine {
     type Transaction: TxTrait;
@@ -28,12 +28,14 @@ pub trait Engine {
     ) -> Self::BlockHeader;
     fn build_receipt(
         &self,
+        cumulative_gas_used: u64,
         result: &ExecuteResult,
         tx_idx: usize,
         tx: &Self::Transaction,
         header: &Self::BlockHeader,
     ) -> Self::Receipt;
-    fn tx_context<'a>(&self, ctx: &mut Context<'a, Self::Transaction, Self::BlockHeader>);
+    fn author(&self, header: &Self::BlockHeader) -> Result<Option<SH160>, String>;
+    fn tx_context<'a>(&self, ctx: &mut TxContext<'a, Self::Transaction, Self::BlockHeader>);
     fn process_withdrawals<D: StateDB>(
         &mut self,
         statedb: &mut D,
@@ -54,11 +56,12 @@ pub struct BlockBuilder<E: Engine, D: StateDB, P> {
     header: E::BlockHeader,
     statedb: D,
     signer: Signer,
+    miner: Option<SH160>,
 
     evm_cfg: evm::Config,
     precompile: PrecompileSet,
 
-    gas_pool: u64,
+    cumulative_gas_used: u64,
     prefetcher: P,
 
     txs: Vec<Arc<E::Transaction>>,
@@ -76,22 +79,23 @@ where
         statedb: D,
         prefetcher: P,
         header: E::BlockHeader,
-    ) -> BlockBuilder<E, D, P> {
-        let gas_pool = header.gas_limit().as_u64();
-        BlockBuilder {
+    ) -> Result<BlockBuilder<E, D, P>, String> {
+        let miner = engine.author(&header)?;
+        Ok(BlockBuilder {
             signer: engine.signer(),
             evm_cfg: engine.evm_config(),
+            miner,
             statedb,
             precompile: engine.precompile(),
             engine,
             header,
-            gas_pool,
+            cumulative_gas_used: 0,
             prefetcher,
 
             txs: Vec::new(),
             receipts: Vec::new(),
             withdrawals: None,
-        }
+        })
     }
 
     pub fn txs(&self) -> &[Arc<E::Transaction>] {
@@ -122,9 +126,13 @@ where
     pub fn commit(&mut self, tx: Arc<E::Transaction>) -> Result<&E::Receipt, CommitError> {
         let receipt = match self.execute_tx(&tx) {
             Ok(execute_result) => {
-                let receipt =
-                    self.engine
-                        .build_receipt(&execute_result, self.txs.len(), &tx, &self.header);
+                let receipt = self.engine.build_receipt(
+                    self.cumulative_gas_used,
+                    &execute_result,
+                    self.txs.len(),
+                    &tx,
+                    &self.header,
+                );
                 self.cost_gas(execute_result.used_gas);
                 self.receipts.push(receipt);
                 self.txs.push(tx.clone());
@@ -136,20 +144,21 @@ where
     }
 
     fn refund_gas(&mut self, gas: u64) {
-        self.gas_pool += gas;
-        self.header
-            .set_gas_used(self.header.gas_limit() - SU64::from(self.gas_pool));
+        self.cumulative_gas_used -= gas;
     }
 
     fn cost_gas(&mut self, gas: u64) {
-        self.gas_pool -= gas;
-        self.header
-            .set_gas_used(self.header.gas_limit() - SU64::from(self.gas_pool));
+        self.cumulative_gas_used += gas;
+    }
+
+    pub fn finalize_header(&mut self) -> Result<&E::BlockHeader, String> {
+        let state_root = self.flush_state().map_err(debug)?;
+        self.header.set_state_root(state_root);
+        Ok(&self.header)
     }
 
     pub fn finalize(mut self) -> Result<E::Block, String> {
-        let state_root = self.flush_state().map_err(debug)?;
-        self.header.set_state_root(state_root);
+        self.finalize_header()?;
         let blk = self.engine.finalize_block(
             &mut self.statedb,
             self.header,
@@ -161,16 +170,8 @@ where
     }
 
     fn execute_tx(&mut self, tx: &E::Transaction) -> Result<ExecuteResult, CommitError> {
-        let gas_limit = tx.gas_limit();
-        if self.gas_pool < gas_limit {
-            return Err(CommitError::NotEnoughGasLimit {
-                gas_pool: self.gas_pool,
-                gas_limit,
-            });
-        }
-
         let caller = tx.sender(&self.signer);
-        let mut ctx = Context {
+        let mut ctx = TxContext {
             chain_id: self.signer.chain_id,
             caller,
             cfg: &self.evm_cfg,
@@ -180,11 +181,26 @@ where
             no_gas_fee: false,
             extra_fee: None,
             gas_overcommit: false,
-            miner: None,
+            miner: self.miner,
             block_base_fee: 0.into(),
             difficulty: 0.into(),
         };
         self.engine.tx_context(&mut ctx);
+
+        let gas_limit = tx.gas_limit();
+        if !ctx.no_gas_fee {
+            let block_gas_limit = self.header.gas_limit();
+            let gas_pool = block_gas_limit
+                .as_u64()
+                .saturating_sub(self.cumulative_gas_used);
+            if gas_pool < gas_limit {
+                return Err(CommitError::NotEnoughGasLimit {
+                    gas_pool,
+                    gas_limit,
+                });
+            }
+        }
+
         let state_db = &mut self.statedb;
         let result = TxExecutor::new(ctx, state_db)
             .execute()

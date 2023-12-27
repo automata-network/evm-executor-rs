@@ -29,7 +29,7 @@ pub enum ExecuteError {
 }
 
 #[derive(Debug, Clone)]
-pub struct Context<'a, T: TxTrait, B: BlockHeaderTrait> {
+pub struct TxContext<'a, T: TxTrait, B: BlockHeaderTrait> {
     pub chain_id: SU256,
     pub caller: SH160,
     pub cfg: &'a evm::Config,
@@ -39,7 +39,10 @@ pub struct Context<'a, T: TxTrait, B: BlockHeaderTrait> {
     pub no_gas_fee: bool,
     pub extra_fee: Option<SU256>,
     pub gas_overcommit: bool,
+
+    // will no send the tx fee if it's None
     pub miner: Option<SH160>,
+
     pub block_base_fee: SU256,
     pub difficulty: SU256,
 }

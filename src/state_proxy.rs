@@ -1,6 +1,6 @@
 use std::prelude::v1::*;
 
-use super::Context;
+use super::TxContext;
 use core::cell::RefCell;
 use crypto::keccak_hash;
 use eth_types::{BlockHeaderTrait, TxTrait, H160, H256, SH256, U256};
@@ -8,11 +8,11 @@ use statedb::StateDB;
 
 pub struct StateProxy<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> {
     state_db: RefCell<&'a mut D>,
-    ctx: Context<'a, T, B>,
+    ctx: TxContext<'a, T, B>,
 }
 
 impl<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> StateProxy<'a, D, T, B> {
-    pub fn new(state: &'a mut D, ctx: Context<'a, T, B>) -> Self {
+    pub fn new(state: &'a mut D, ctx: TxContext<'a, T, B>) -> Self {
         Self {
             state_db: RefCell::new(state),
             ctx,

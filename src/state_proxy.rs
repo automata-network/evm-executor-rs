@@ -3,16 +3,16 @@ use std::prelude::v1::*;
 use super::Context;
 use core::cell::RefCell;
 use crypto::keccak_hash;
-use eth_types::{H160, H256, SH256, U256};
+use eth_types::{BlockHeaderTrait, TxTrait, H160, H256, SH256, U256};
 use statedb::StateDB;
 
-pub struct StateProxy<'a, D: StateDB> {
+pub struct StateProxy<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> {
     state_db: RefCell<&'a mut D>,
-    ctx: Context<'a>,
+    ctx: Context<'a, T, B>,
 }
 
-impl<'a, D: StateDB> StateProxy<'a, D> {
-    pub fn new(state: &'a mut D, ctx: Context<'a>) -> Self {
+impl<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> StateProxy<'a, D, T, B> {
+    pub fn new(state: &'a mut D, ctx: Context<'a, T, B>) -> Self {
         Self {
             state_db: RefCell::new(state),
             ctx,
@@ -20,7 +20,12 @@ impl<'a, D: StateDB> StateProxy<'a, D> {
     }
 }
 
-impl<'a, D: StateDB> evm::backend::Backend for StateProxy<'a, D> {
+impl<'a, D, T, B> evm::backend::Backend for StateProxy<'a, D, T, B>
+where
+    D: StateDB,
+    T: TxTrait,
+    B: BlockHeaderTrait,
+{
     fn block_base_fee_per_gas(&self) -> U256 {
         glog::debug!(target: "executor", "get base fee");
         self.ctx.block_base_fee.into()
@@ -43,7 +48,7 @@ impl<'a, D: StateDB> evm::backend::Backend for StateProxy<'a, D> {
     fn block_coinbase(&self) -> H160 {
         let miner = match self.ctx.miner {
             Some(miner) => miner,
-            None => self.ctx.header.miner,
+            None => self.ctx.header.miner().clone(),
         };
         glog::debug!(target: "executor", "get coinbase: {:?}", miner);
         miner.into()
@@ -55,15 +60,15 @@ impl<'a, D: StateDB> evm::backend::Backend for StateProxy<'a, D> {
     }
 
     fn block_gas_limit(&self) -> U256 {
-        glog::debug!(target: "executor", "get gas_limit: {:?}", self.ctx.header.gas_limit);
-        self.ctx.header.gas_limit.as_u64().into()
+        glog::debug!(target: "executor", "get gas_limit: {:?}", self.ctx.header.gas_limit());
+        self.ctx.header.gas_limit().as_u64().into()
     }
 
     fn block_hash(&self, number: U256) -> H256 {
         glog::info!("get block hash: {:?}", number);
         let chain_id = self.chain_id().as_u64();
         let number = number.as_u64();
-        let blk_num = self.ctx.header.number.as_u64();
+        let blk_num = self.ctx.header.number().as_u64();
         let val = if number >= blk_num || number < blk_num.saturating_sub(256) {
             Default::default()
         } else {
@@ -77,13 +82,13 @@ impl<'a, D: StateDB> evm::backend::Backend for StateProxy<'a, D> {
     }
 
     fn block_number(&self) -> U256 {
-        glog::debug!(target: "executor", "get block number: {:?}", self.ctx.header.number);
-        self.ctx.header.number.as_u64().into()
+        glog::debug!(target: "executor", "get block number: {:?}", self.ctx.header.number());
+        self.ctx.header.number().as_u64().into()
     }
 
     fn block_timestamp(&self) -> U256 {
-        glog::debug!(target: "executor", "get timestamp: {}", self.ctx.header.timestamp);
-        self.ctx.header.timestamp.as_u64().into()
+        glog::debug!(target: "executor", "get timestamp: {}", self.ctx.header.timestamp());
+        self.ctx.header.timestamp().as_u64().into()
     }
 
     fn chain_id(&self) -> U256 {
@@ -112,8 +117,7 @@ impl<'a, D: StateDB> evm::backend::Backend for StateProxy<'a, D> {
         glog::debug!(target: "executor", "get gas price");
         self.ctx
             .tx
-            .tx
-            .gas_price(Some(self.ctx.header.base_fee_per_gas))
+            .gas_price(self.ctx.header.base_fee())
             .into()
     }
 

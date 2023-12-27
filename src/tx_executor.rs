@@ -1,7 +1,7 @@
 use std::prelude::v1::*;
 
 use base::format::parse_ether;
-use eth_types::{Log, H160, H256, SU256};
+use eth_types::{BlockHeaderTrait, Log, TxTrait, H160, H256, SU256};
 use evm::{
     backend::Apply,
     executor::stack::{MemoryStackState, StackExecutor, StackSubstateMetadata},
@@ -13,17 +13,22 @@ use std::time::Instant;
 use crate::{Context, ExecuteError, ExecuteResult, StateProxy};
 
 #[derive(Debug)]
-pub struct TxExecutor<'a, D: StateDB> {
-    ctx: Context<'a>,
+pub struct TxExecutor<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> {
+    ctx: Context<'a, T, B>,
     state_db: &'a mut D,
     initial_gas: u64,
     gas: u64,
     gas_price: SU256,
 }
 
-impl<'a, D: StateDB> TxExecutor<'a, D> {
-    pub fn new(ctx: Context<'a>, state_db: &'a mut D) -> Self {
-        let gas_price = ctx.tx.tx.gas_price(Some(ctx.header.base_fee_per_gas));
+impl<'a, D, T, B> TxExecutor<'a, D, T, B>
+where
+    D: StateDB,
+    T: TxTrait,
+    B: BlockHeaderTrait,
+{
+    pub fn new(ctx: Context<'a, T, B>, state_db: &'a mut D) -> Self {
+        let gas_price = ctx.tx.gas_price(ctx.header.base_fee());
         Self {
             ctx,
             state_db,
@@ -34,7 +39,7 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
     }
 
     pub fn execute(&mut self) -> Result<ExecuteResult, ExecuteError> {
-        let mut base_fee = self.ctx.header.base_fee_per_gas;
+        let mut base_fee = self.ctx.header.base_fee().unwrap_or_default();
 
         self.check_nonce(false)?;
         self.check_base_fee(&mut base_fee)?;
@@ -60,7 +65,7 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
     }
 
     fn calculate_txfee(&self, gas: u64, base_fee: &SU256) -> SU256 {
-        let tx = &self.ctx.tx.tx;
+        let tx = self.ctx.tx;
         let gas_tip_cap = tx.max_priority_fee_per_gas();
         let gas_fee_cap = tx.max_fee_per_gas();
         let effective_tip = (*gas_tip_cap).min(*gas_fee_cap - base_fee);
@@ -70,12 +75,12 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
     }
 
     fn exec_tx(&mut self) -> ExecuteResult {
-        let tx = &self.ctx.tx.tx;
+        let tx = self.ctx.tx;
         let precompile_set = self.ctx.precompile;
         let config = self.ctx.cfg;
 
         let access_list = self.generate_access_list();
-        let gas_limit = self.ctx.tx.tx.gas().as_u64();
+        let gas_limit = self.ctx.tx.gas().as_u64();
 
         let metadata = StackSubstateMetadata::new(gas_limit, config);
         let state = StateProxy::new(self.state_db, self.ctx.clone());
@@ -143,21 +148,21 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
     }
 
     fn check_base_fee(&self, base_fee: &mut SU256) -> Result<(), ExecuteError> {
-        let gas_fee_cap = self.ctx.tx.tx.max_fee_per_gas();
+        let gas_fee_cap = self.ctx.tx.max_fee_per_gas();
         if gas_fee_cap < base_fee {
-            let effective_gas_tip = self.ctx.tx.tx.effective_gas_tip(None).unwrap();
+            let effective_gas_tip = self.ctx.tx.effective_gas_tip(None).unwrap();
             return Err(ExecuteError::InsufficientBaseFee {
-                tx_hash: self.ctx.tx.hash,
+                tx_hash: self.ctx.tx.hash(),
                 block_base_fee_gwei: parse_ether(base_fee, 9),
                 base_fee_gwei: parse_ether(&effective_gas_tip, 9),
-                block_number: self.ctx.header.number.as_u64(),
+                block_number: self.ctx.header.number().as_u64(),
             });
         }
         Ok(())
     }
 
     fn generate_access_list(&self) -> Vec<(H160, Vec<H256>)> {
-        let tx = &self.ctx.tx.tx;
+        let tx = self.ctx.tx;
         let mut access_list = vec![];
         if let Some(al) = tx.access_list() {
             access_list.reserve(al.len());
@@ -173,15 +178,15 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
 
     // check whether the caller's nonce matches the tx
     fn check_nonce(&mut self, try_get: bool) -> Result<(), ExecuteError> {
-        let caller = self.ctx.caller;
-        let tx_nonce = self.ctx.tx.tx.nonce();
+        let caller = &self.ctx.caller;
+        let tx_nonce = self.ctx.tx.nonce();
         let nonce = if try_get {
             match self.state_db.try_get_nonce(caller) {
                 Some(nonce) => nonce,
                 None => return Ok(()),
             }
         } else {
-            glog::debug!(target:"invalid_nonce", "check tx[{:?} {:?}] nonce", self.ctx.tx.hash, caller);
+            glog::debug!(target:"invalid_nonce", "check tx[{:?} {:?}] nonce", self.ctx.tx.hash(), caller);
             self.state_db
                 .get_nonce(caller)
                 .map_err(ExecuteError::StateError)?
@@ -204,8 +209,8 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
     }
 
     fn buy_gas(&mut self) -> Result<(), ExecuteError> {
-        let tx = &self.ctx.tx.tx;
-        let caller = self.ctx.caller;
+        let tx = self.ctx.tx;
+        let caller = &self.ctx.caller;
         let gas: SU256 = tx.gas().as_u64().into();
         let mgval = gas * self.gas_price;
         let mut balance_check = gas * tx.max_fee_per_gas();
@@ -213,27 +218,30 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
         let extra_fee = self.ctx.extra_fee.unwrap_or(SU256::default());
         balance_check += extra_fee;
 
-        let balance = self
-            .state_db
-            .get_balance(caller)
-            .map_err(ExecuteError::StateError)?;
+        let skip_check = self.ctx.no_gas_fee;
+        if !skip_check {
+            let balance = self
+                .state_db
+                .get_balance(caller)
+                .map_err(ExecuteError::StateError)?;
 
-        if balance < balance_check {
-            // if !dry_run {
-            glog::info!(
-                "[{:?}] acc: {:?}, got balance: {}, need balance: {}",
-                tx.hash().raw(),
-                self.ctx.caller,
-                balance,
-                balance_check
-            );
-            return Err(ExecuteError::InsufficientFunds);
-            // }
+            if balance < balance_check {
+                // if !dry_run {
+                glog::info!(
+                    "[{:?}] acc: {:?}, got balance: {}, need balance: {}",
+                    tx.hash().raw(),
+                    self.ctx.caller,
+                    balance,
+                    balance_check
+                );
+                return Err(ExecuteError::InsufficientFunds);
+                // }
 
-            // so the dry run can continue
-            // mgval = balance;
+                // so the dry run can continue
+                // mgval = balance;
+            }
         }
-
+        
         self.gas += tx.gas().as_u64();
 
         self.initial_gas += tx.gas().as_u64();
@@ -249,7 +257,7 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
         if !self.ctx.no_gas_fee {
             let remaining = SU256::from(self.gas) * self.gas_price;
             self.state_db
-                .add_balance(self.ctx.caller, &remaining)
+                .add_balance(&self.ctx.caller, &remaining)
                 .map_err(ExecuteError::StateError)?;
         }
         // glog::info!("refund gas fee: {}", remaining);
@@ -291,7 +299,7 @@ impl<'a, D: StateDB> TxExecutor<'a, D> {
                                 .map_err(ExecuteError::StateError)?;
                         }
                     } else {
-                        if self.ctx.caller == &address {
+                        if self.ctx.caller == address {
                             self.state_db
                                 .set_nonce(&address, basic.nonce.into())
                                 .map_err(ExecuteError::StateError)?;

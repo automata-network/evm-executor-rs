@@ -3,6 +3,9 @@
 #[macro_use]
 extern crate sgxlib as std;
 
+mod engines;
+pub use engines::*;
+
 mod tx_executor;
 pub use tx_executor::*;
 
@@ -14,3 +17,6 @@ pub use precompile::*;
 
 mod state_proxy;
 pub use state_proxy::*;
+
+mod block_builder;
+pub use block_builder::*;

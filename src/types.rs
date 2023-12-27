@@ -1,6 +1,6 @@
 use std::prelude::v1::*;
 
-use eth_types::{BlockHeader, HexBytes, Log, PoolTx, H256, SH160, SH256, SU256};
+use eth_types::{BlockHeaderTrait, HexBytes, Log, TxTrait, H256, SH160, SH256, SU256};
 use evm::backend::Apply;
 use std::collections::BTreeMap;
 
@@ -29,13 +29,13 @@ pub enum ExecuteError {
 }
 
 #[derive(Debug, Clone)]
-pub struct Context<'a> {
-    pub chain_id: &'a SU256,
-    pub caller: &'a SH160,
+pub struct Context<'a, T: TxTrait, B: BlockHeaderTrait> {
+    pub chain_id: SU256,
+    pub caller: SH160,
     pub cfg: &'a evm::Config,
     pub precompile: &'a PrecompileSet,
-    pub tx: &'a PoolTx,
-    pub header: &'a BlockHeader,
+    pub tx: &'a T,
+    pub header: &'a B,
     pub no_gas_fee: bool,
     pub extra_fee: Option<SU256>,
     pub gas_overcommit: bool,

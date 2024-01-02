@@ -9,7 +9,7 @@ use statedb::StateDB;
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use crate::{ExecuteError, ExecuteResult, PrecompileSet, TxContext, TxExecutor};
+use crate::{BlockHashGetter, ExecuteError, ExecuteResult, PrecompileSet, TxContext, TxExecutor};
 
 pub trait Engine {
     type Transaction: TxTrait;
@@ -35,7 +35,10 @@ pub trait Engine {
         header: &Self::BlockHeader,
     ) -> Self::Receipt;
     fn author(&self, header: &Self::BlockHeader) -> Result<Option<SH160>, String>;
-    fn tx_context<'a>(&self, ctx: &mut TxContext<'a, Self::Transaction, Self::BlockHeader>);
+    fn tx_context<'a, H: BlockHashGetter>(
+        &self,
+        ctx: &mut TxContext<'a, Self::Transaction, Self::BlockHeader, H>,
+    );
     fn process_withdrawals<D: StateDB>(
         &mut self,
         statedb: &mut D,
@@ -51,7 +54,7 @@ pub trait Engine {
     ) -> Result<Self::Block, String>;
 }
 
-pub struct BlockBuilder<E: Engine, D: StateDB, P> {
+pub struct BlockBuilder<E: Engine, D: StateDB, P: BlockHashGetter> {
     engine: E,
     header: E::BlockHeader,
     statedb: D,
@@ -73,6 +76,7 @@ impl<E, D, P> BlockBuilder<E, D, P>
 where
     E: Engine,
     D: StateDB,
+    P: BlockHashGetter,
 {
     pub fn new(
         engine: E,
@@ -154,6 +158,7 @@ where
     pub fn finalize_header(&mut self) -> Result<&E::BlockHeader, String> {
         let state_root = self.flush_state().map_err(debug)?;
         self.header.set_state_root(state_root);
+        self.header.set_gas_used(self.cumulative_gas_used.into());
         Ok(&self.header)
     }
 
@@ -178,6 +183,7 @@ where
             precompile: &self.precompile,
             tx,
             header: &self.header,
+            block_hash_getter: &self.prefetcher,
             no_gas_fee: false,
             extra_fee: None,
             gas_overcommit: false,
@@ -219,7 +225,7 @@ where
 impl<E, D, P> BlockBuilder<E, D, P>
 where
     E: Engine,
-    P: StatePrefetcher,
+    P: BlockHashGetter + StatePrefetcher,
     D: StateDB,
 {
     pub fn prefetch<'a, I>(&mut self, list: I) -> Result<usize, statedb::Error>

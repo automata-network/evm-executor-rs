@@ -28,8 +28,12 @@ pub enum ExecuteError {
     StateError(statedb::Error),
 }
 
-#[derive(Debug, Clone)]
-pub struct TxContext<'a, T: TxTrait, B: BlockHeaderTrait> {
+pub trait BlockHashGetter {
+    fn get_hash(&self, current: u64, target: u64) -> SH256;
+}
+
+#[derive(Debug)]
+pub struct TxContext<'a, T: TxTrait, B: BlockHeaderTrait, H: BlockHashGetter> {
     pub chain_id: SU256,
     pub caller: SH160,
     pub cfg: &'a evm::Config,
@@ -39,12 +43,38 @@ pub struct TxContext<'a, T: TxTrait, B: BlockHeaderTrait> {
     pub no_gas_fee: bool,
     pub extra_fee: Option<SU256>,
     pub gas_overcommit: bool,
+    pub block_hash_getter: &'a H,
 
     // will no send the tx fee if it's None
     pub miner: Option<SH160>,
 
     pub block_base_fee: SU256,
     pub difficulty: SU256,
+}
+
+impl<'a, T, B, H> Clone for TxContext<'a, T, B, H>
+where
+    T: TxTrait,
+    B: BlockHeaderTrait,
+    H: BlockHashGetter,
+{
+    fn clone(&self) -> Self {
+        Self {
+            chain_id: self.chain_id.clone(),
+            caller: self.caller.clone(),
+            cfg: self.cfg,
+            precompile: self.precompile,
+            tx: self.tx,
+            header: self.header,
+            no_gas_fee: self.no_gas_fee,
+            extra_fee: self.extra_fee.clone(),
+            gas_overcommit: self.gas_overcommit,
+            block_hash_getter: self.block_hash_getter,
+            miner: self.miner.clone(),
+            block_base_fee: self.block_base_fee.clone(),
+            difficulty: self.difficulty.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Default)]

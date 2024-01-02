@@ -1,18 +1,26 @@
 use std::prelude::v1::*;
 
+use crate::BlockHashGetter;
+
 use super::TxContext;
 use core::cell::RefCell;
 use crypto::keccak_hash;
 use eth_types::{BlockHeaderTrait, TxTrait, H160, H256, SH256, U256};
 use statedb::StateDB;
 
-pub struct StateProxy<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> {
+pub struct StateProxy<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait, H: BlockHashGetter> {
     state_db: RefCell<&'a mut D>,
-    ctx: TxContext<'a, T, B>,
+    ctx: TxContext<'a, T, B, H>,
 }
 
-impl<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> StateProxy<'a, D, T, B> {
-    pub fn new(state: &'a mut D, ctx: TxContext<'a, T, B>) -> Self {
+impl<'a, D, T, B, H> StateProxy<'a, D, T, B, H>
+where
+    D: StateDB,
+    T: TxTrait,
+    B: BlockHeaderTrait,
+    H: BlockHashGetter,
+{
+    pub fn new(state: &'a mut D, ctx: TxContext<'a, T, B, H>) -> Self {
         Self {
             state_db: RefCell::new(state),
             ctx,
@@ -20,11 +28,12 @@ impl<'a, D: StateDB, T: TxTrait, B: BlockHeaderTrait> StateProxy<'a, D, T, B> {
     }
 }
 
-impl<'a, D, T, B> evm::backend::Backend for StateProxy<'a, D, T, B>
+impl<'a, D, T, B, H> evm::backend::Backend for StateProxy<'a, D, T, B, H>
 where
     D: StateDB,
     T: TxTrait,
     B: BlockHeaderTrait,
+    H: BlockHashGetter,
 {
     fn block_base_fee_per_gas(&self) -> U256 {
         glog::debug!(target: "executor", "get base fee");
@@ -65,20 +74,11 @@ where
     }
 
     fn block_hash(&self, number: U256) -> H256 {
-        glog::info!("get block hash: {:?}", number);
-        let chain_id = self.chain_id().as_u64();
         let number = number.as_u64();
-        let blk_num = self.ctx.header.number().as_u64();
-        let val = if number >= blk_num || number < blk_num.saturating_sub(256) {
-            Default::default()
-        } else {
-            let mut buf = chain_id.to_be_bytes().to_vec();
-            buf.extend(number.to_be_bytes());
-            keccak_hash(&buf).into()
-        };
-
+        let current = self.ctx.header.number().as_u64();
+        let val = self.ctx.block_hash_getter.get_hash(current, number);
         glog::debug!(target: "executor", "get block hash: {:?} => {:?}", number, val);
-        val
+        val.into()
     }
 
     fn block_number(&self) -> U256 {
@@ -115,10 +115,7 @@ where
 
     fn gas_price(&self) -> U256 {
         glog::debug!(target: "executor", "get gas price");
-        self.ctx
-            .tx
-            .gas_price(self.ctx.header.base_fee())
-            .into()
+        self.ctx.tx.gas_price(self.ctx.header.base_fee()).into()
     }
 
     fn origin(&self) -> H160 {

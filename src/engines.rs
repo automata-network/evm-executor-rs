@@ -8,7 +8,7 @@ use eth_types::{
 use statedb::StateDB;
 use std::sync::Arc;
 
-use crate::{Engine, ExecuteResult, PrecompileSet, TxContext};
+use crate::{BlockHashGetter, Engine, ExecuteResult, PrecompileSet, TxContext};
 
 #[derive(Clone, Debug)]
 pub struct Ethereum {
@@ -81,7 +81,10 @@ impl Engine for Ethereum {
         self.signer.clone()
     }
 
-    fn tx_context<'a>(&self, ctx: &mut TxContext<'a, Self::Transaction, Self::BlockHeader>) {
+    fn tx_context<'a, H: BlockHashGetter>(
+        &self,
+        ctx: &mut TxContext<'a, Self::Transaction, Self::BlockHeader, H>,
+    ) {
         ctx.block_base_fee = ctx.header.base_fee_per_gas;
         ctx.miner = Some(ctx.header.miner);
     }

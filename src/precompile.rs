@@ -1,3 +1,4 @@
+use core::{cmp::Ordering, str::FromStr};
 use std::prelude::v1::*;
 
 use std::collections::BTreeMap;
@@ -354,6 +355,29 @@ impl PrecompiledContract for PrecompileEcrecover {
             sig[0..32].copy_from_slice(&input[64..96]);
             sig[32..64].copy_from_slice(&input[96..128]);
             sig[64] = input[63];
+
+            // Make sure that input[32:63] are all zeros
+            for i in 32..63 {
+                if input[i] != 0 {
+                    return Vec::new();
+                }
+            }
+
+            // Check signatures
+            let r = BigUint::from_bytes_be(&sig[0..32]);
+            let s = BigUint::from_bytes_be(&sig[32..64]);
+            let v: u8 = sig[64];
+            if let Ordering::Less = r.cmp(&BigUint::from(1u16)) {
+                return Vec::new();
+            }
+            if let Ordering::Less = s.cmp(&BigUint::from(1u16)) {
+                return Vec::new();
+            }
+            // secp256k1N = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141
+            let secp256k1N = BigUint::from_str("115792089237316195423570985008687907852837564279074904382605163141518161494337").unwrap();
+            if r.cmp(&secp256k1N) != Ordering::Less || s.cmp(&secp256k1N) != Ordering::Less || (v != 27 && v != 28) {
+                return Vec::new();
+            }
 
             let pubkey = match secp256k1_ecdsa_recover(&sig, &msg) {
                 Some(pubkey) => pubkey,

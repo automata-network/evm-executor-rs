@@ -1,18 +1,24 @@
+use core::{cmp::Ordering, str::FromStr};
 use std::prelude::v1::*;
 
 use std::collections::BTreeMap;
 
 use crypto::{keccak_hash, secp256k1_ecdsa_recover, sha256_sum};
-use eth_types::{HexBytes, H160, U256};
+use eth_types::{HexBytes, H160, SU256, U256};
 
 use evm::{
     executor::stack::{
         IsPrecompileResult, PrecompileFailure, PrecompileHandle, PrecompileOutput,
         PrecompileSet as EvmPrecompileSet,
     },
-    ExitFatal, ExitSucceed,
+    ExitFatal, ExitSucceed, ExitRevert,
 };
 use num_bigint::BigUint;
+use std::ops::Deref;
+
+lazy_static::lazy_static! {
+    static ref SECP256K1N: SU256 = "115792089237316195423570985008687907852837564279074904382605163141518161494337".into();
+}
 
 pub type PrecompileResult = Result<PrecompileOutput, PrecompileFailure>;
 
@@ -42,7 +48,7 @@ impl PrecompileSet {
         def.add(6, PrecompileAddIstanbul {});
         def.add(7, PrecompileMulIstanbul {});
         def.add(8, PrecompilePairIstanbul {});
-        // def.add(9, PrecompileBlake2F {});
+        def.add(9, PrecompileBlake2F {});
 
         def
     }
@@ -355,6 +361,21 @@ impl PrecompiledContract for PrecompileEcrecover {
             sig[32..64].copy_from_slice(&input[96..128]);
             sig[64] = input[63];
 
+            // Make sure that input[32:63] are all zeros
+            if input[32..63].iter().any(|i| i != &0u8) {
+                return Vec::new();
+            }
+            // Check signatures
+            let r = SU256::from_big_endian(&sig[0..32]);
+            let s = SU256::from_big_endian(&sig[32..64]);
+            let v: u8 = sig[64];
+            if r.is_zero() || s.is_zero() {
+                return Vec::new();
+            }
+            if &r >= SECP256K1N.deref() || &s >= SECP256K1N.deref() || (v != 27 && v != 28) {
+                return Vec::new();
+            }
+
             let pubkey = match secp256k1_ecdsa_recover(&sig, &msg) {
                 Some(pubkey) => pubkey,
                 None => return Vec::new(),
@@ -426,65 +447,143 @@ impl PrecompiledContract for PrecompileRipemd160Hash {
     }
 }
 
-// #[derive(Debug)]
-// pub struct PrecompileBlake2F {}
+#[derive(Debug)]
+pub struct PrecompileBlake2F {}
 
-// impl PrecompiledContract for PrecompileBlake2F {
-//     fn required_gas(&self, mut input: &[u8]) -> u64 {
-//         if input.len() != 213 {
-//             return 0;
-//         }
-//         let mut val = [0_u8; 4];
-//         val.copy_from_slice(&input[..4]);
-//         return u32::from_be_bytes(val) as u64;
-//     }
+impl PrecompiledContract for PrecompileBlake2F {
+    fn required_gas(&self, mut input: &[u8]) -> u64 {
+        if input.len() != 213 {
+            return 0;
+        }
+        let mut val = [0_u8; 4];
+        val.copy_from_slice(&input[..4]);
+        return u32::from_be_bytes(val) as u64;
+    }
 
-//     fn run(&self, input: &[u8]) -> PrecompileResult {
-//         if input.len() != INPUT_LENGTH {
-//             return Err(PrecompileFailure::Revert {
-//                 exit_status: ExitRevert::Reverted,
-//                 output: "Invalid Length".into(),
-//             });
-//         }
+    fn run(&self, input: &[u8]) -> PrecompileResult {
+        if input.len() != 213 {
+            return Err(PrecompileFailure::Revert {
+                exit_status: ExitRevert::Reverted,
+                output: "Invalid Length".into(),
+            });
+        }
 
-//         let f = match input[212] {
-//             1 => true,
-//             0 => false,
-//             _ => {
-//                 return Err(PrecompileFailure::Revert {
-//                     exit_status: ExitRevert::Reverted,
-//                     output: "Invalid Length".into(),
-//                 })
-//             }
-//         };
+        let f = match input[212] {
+            1 => true,
+            0 => false,
+            _ => {
+                return Err(PrecompileFailure::Revert {
+                    exit_status: ExitRevert::Reverted,
+                    output: "Invalid Length".into(),
+                })
+            }
+        };
 
-//         // rounds 4 bytes
-//         let rounds = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
+        // rounds 4 bytes
+        let rounds = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
 
-//         let mut h = [0u64; 8];
-//         let mut m = [0u64; 16];
+        let mut h = [0u64; 8];
+        let mut m = [0u64; 16];
 
-//         for (i, pos) in (4..68).step_by(8).enumerate() {
-//             h[i] = u64::from_le_bytes(input[pos..pos + 8].try_into().unwrap());
-//         }
-//         for (i, pos) in (68..196).step_by(8).enumerate() {
-//             m[i] = u64::from_le_bytes(input[pos..pos + 8].try_into().unwrap());
-//         }
-//         let t = [
-//             u64::from_le_bytes(input[196..196 + 8].try_into().unwrap()),
-//             u64::from_le_bytes(input[204..204 + 8].try_into().unwrap()),
-//         ];
+        for (i, pos) in (4..68).step_by(8).enumerate() {
+            h[i] = u64::from_le_bytes(input[pos..pos + 8].try_into().unwrap());
+        }
+        for (i, pos) in (68..196).step_by(8).enumerate() {
+            m[i] = u64::from_le_bytes(input[pos..pos + 8].try_into().unwrap());
+        }
+        let t = [
+            u64::from_le_bytes(input[196..196 + 8].try_into().unwrap()),
+            u64::from_le_bytes(input[204..204 + 8].try_into().unwrap()),
+        ];
 
-//         algo::compress(rounds, &mut h, m, t, f);
+        eip_152::compress(&mut h, m, t, f, rounds);
 
-//         let mut out = [0u8; 64];
-//         for (i, h) in (0..64).step_by(8).zip(h.iter()) {
-//             out[i..i + 8].copy_from_slice(&h.to_le_bytes());
-//         }
+        let mut out = [0u8; 64];
+        for (i, h) in (0..64).step_by(8).zip(h.iter()) {
+            out[i..i + 8].copy_from_slice(&h.to_le_bytes());
+        }
 
-//         Ok((gas_used, out.to_vec()))
-//     }
-// }
+        Ok(PrecompileOutput {
+            exit_status: ExitSucceed::Returned,
+            output: out.into(),
+        })
+    }
+}
+
+mod eip_152 {
+    const SIGMA: [[usize; 16]; 10] = [
+        [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        [14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3],
+        [11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4],
+        [7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8],
+        [9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13],
+        [2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9],
+        [12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11],
+        [13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10],
+        [6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5],
+        [10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0],
+    ];
+
+    /// IV is the initialization vector for BLAKE2b. See https://tools.ietf.org/html/rfc7693#section-2.6
+    /// for details.
+    const IV: [u64; 8] = [
+        0x6a09e667f3bcc908,
+        0xbb67ae8584caa73b,
+        0x3c6ef372fe94f82b,
+        0xa54ff53a5f1d36f1,
+        0x510e527fade682d1,
+        0x9b05688c2b3e6c1f,
+        0x1f83d9abfb41bd6b,
+        0x5be0cd19137e2179,
+    ];
+
+    #[inline(always)]
+    /// The G mixing function. See https://tools.ietf.org/html/rfc7693#section-3.1
+    fn g(v: &mut [u64], a: usize, b: usize, c: usize, d: usize, x: u64, y: u64) {
+        v[a] = v[a].wrapping_add(v[b]).wrapping_add(x);
+        v[d] = (v[d] ^ v[a]).rotate_right(32);
+        v[c] = v[c].wrapping_add(v[d]);
+        v[b] = (v[b] ^ v[c]).rotate_right(24);
+        v[a] = v[a].wrapping_add(v[b]).wrapping_add(y);
+        v[d] = (v[d] ^ v[a]).rotate_right(16);
+        v[c] = v[c].wrapping_add(v[d]);
+        v[b] = (v[b] ^ v[c]).rotate_right(63);
+    }
+
+    /// The Blake2 compression function F. See https://tools.ietf.org/html/rfc7693#section-3.2
+    /// Takes as an argument the state vector `h`, message block vector `m`, offset counter `t`, final
+    /// block indicator flag `f`, and number of rounds `rounds`. The state vector provided as the first
+    /// parameter is modified by the function.
+    pub fn compress(h: &mut [u64; 8], m: [u64; 16], t: [u64; 2], f: bool, rounds: usize) {
+        let mut v = [0u64; 16];
+        v[..h.len()].copy_from_slice(h); // First half from state.
+        v[h.len()..].copy_from_slice(&IV); // Second half from IV.
+
+        v[12] ^= t[0];
+        v[13] ^= t[1];
+
+        if f {
+            v[14] = !v[14] // Invert all bits if the last-block-flag is set.
+        }
+        for i in 0..rounds {
+            // Message word selection permutation for this round.
+            let s = &SIGMA[i % 10];
+            g(&mut v, 0, 4, 8, 12, m[s[0]], m[s[1]]);
+            g(&mut v, 1, 5, 9, 13, m[s[2]], m[s[3]]);
+            g(&mut v, 2, 6, 10, 14, m[s[4]], m[s[5]]);
+            g(&mut v, 3, 7, 11, 15, m[s[6]], m[s[7]]);
+
+            g(&mut v, 0, 5, 10, 15, m[s[8]], m[s[9]]);
+            g(&mut v, 1, 6, 11, 12, m[s[10]], m[s[11]]);
+            g(&mut v, 2, 7, 8, 13, m[s[12]], m[s[13]]);
+            g(&mut v, 3, 4, 9, 14, m[s[14]], m[s[15]]);
+        }
+
+        for i in 0..8 {
+            h[i] ^= v[i] ^ v[i + 8];
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct PrecompileBigModExp {
@@ -681,7 +780,10 @@ mod test {
             b"0x05c3ed0c6f6ac6dd647c9ba3e4721c1eb14011ea3d174c52d7981c5b8145aa75",
         )
         .unwrap();
-        let contract = PrecompileBigModExp { eip2565: true, length_limit: None };
+        let contract = PrecompileBigModExp {
+            eip2565: true,
+            length_limit: None,
+        };
         let output: HexBytes = contract.run(&input).unwrap().output.into();
         assert_eq!(expect, output);
         assert_eq!(contract.required_gas(&input), 200); // 16

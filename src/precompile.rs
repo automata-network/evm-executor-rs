@@ -14,6 +14,7 @@ use evm::{
     ExitFatal, ExitSucceed, ExitRevert,
 };
 use num_bigint::BigUint;
+use num_traits::identities::{Zero, One};
 use std::ops::Deref;
 
 lazy_static::lazy_static! {
@@ -47,7 +48,11 @@ impl PrecompileSet {
         );
         def.add(6, PrecompileAddIstanbul {});
         def.add(7, PrecompileMulIstanbul {});
-        def.add(8, PrecompilePairIstanbul {});
+        def.add(8, 
+            PrecompilePairIstanbul {
+                max_input_num: None,
+            }
+        );
         def.add(9, PrecompileBlake2F {});
 
         def
@@ -72,7 +77,11 @@ impl PrecompileSet {
         );
         def.add(6, PrecompileAddIstanbul {});
         def.add(7, PrecompileMulIstanbul {});
-        def.add(8, PrecompilePairIstanbul {});
+        def.add(8, 
+            PrecompilePairIstanbul {
+                max_input_num: Some(4),
+            }
+        );
         def.add(9, PrecompileRevert {});
 
         def
@@ -252,7 +261,9 @@ impl PrecompiledContract for PrecompileMulIstanbul {
 }
 
 #[derive(Debug)]
-pub struct PrecompilePairIstanbul {}
+pub struct PrecompilePairIstanbul {
+    max_input_num: Option<usize>,
+}
 
 impl PrecompiledContract for PrecompilePairIstanbul {
     fn required_gas(&self, input: &[u8]) -> u64 {
@@ -261,15 +272,17 @@ impl PrecompiledContract for PrecompilePairIstanbul {
     fn run(&self, input: &[u8]) -> PrecompileResult {
         use bn::{AffineG1, AffineG2, Fq, Fq2, Group, Gt, G1, G2};
 
-        if input.len() > 4 * PAIR_ELEMENT_LEN {
-            return Err(PrecompileFailure::Fatal {
-                exit_status: ExitFatal::Other("errBadPairingInput".into()),
-            });
+        if let Some(max_input_num) = self.max_input_num {
+            if input.len() > max_input_num * PAIR_ELEMENT_LEN {
+                return Err(PrecompileFailure::Error { 
+                    exit_status: evm::ExitError::Other("bad elliptic curve pairing size, the input num exceed limitation".into()),
+                });
+            }
         }
 
         if input.len() % PAIR_ELEMENT_LEN != 0 {
-            return Err(PrecompileFailure::Fatal {
-                exit_status: ExitFatal::Other("errBadPairingInput".into()),
+            return Err(PrecompileFailure::Error { 
+                exit_status: evm::ExitError::Other("bad elliptic curve pairing size".into()),
             });
         }
 
@@ -285,24 +298,52 @@ impl PrecompiledContract for PrecompilePairIstanbul {
                 let mut buf = [0u8; 32];
 
                 buf.copy_from_slice(&input[(idx * PEL)..(idx * PEL + 32)]);
-                let ax = Fq::from_slice(&buf).unwrap(); //.map_err(|_| Error::Bn128FieldPointNotAMember)?;
+                let ax = Fq::from_slice(&buf).map_err(|_| {
+                    PrecompileFailure::Error {
+						exit_status: evm::ExitError::Other("Invalid a argument x coordinate".into()),
+					}
+                })?;
                 buf.copy_from_slice(&input[(idx * PEL + 32)..(idx * PEL + 64)]);
-                let ay = Fq::from_slice(&buf).unwrap(); //.map_err(|_| Error::Bn128FieldPointNotAMember)?;
+                let ay = Fq::from_slice(&buf).map_err(|_| {
+                    PrecompileFailure::Error {
+                        exit_status: evm::ExitError::Other("Invalid a argument y coordinate".into()),
+                    }
+                })?;
                 buf.copy_from_slice(&input[(idx * PEL + 64)..(idx * PEL + 96)]);
-                let bay = Fq::from_slice(&buf).unwrap(); //.map_err(|_| Error::Bn128FieldPointNotAMember)?;
+                let bay = Fq::from_slice(&buf).map_err(|_| {
+                    PrecompileFailure::Error {
+                        exit_status: evm::ExitError::Other("Invalid b argument imaginary coeff y coordinate".into()),
+                    }
+                })?;
                 buf.copy_from_slice(&input[(idx * PEL + 96)..(idx * PEL + 128)]);
-                let bax = Fq::from_slice(&buf).unwrap(); //.map_err(|_| Error::Bn128FieldPointNotAMember)?;
+                let bax = Fq::from_slice(&buf).map_err(|_| {
+                    PrecompileFailure::Error {
+                        exit_status: evm::ExitError::Other("Invalid b argument imaginary coeff x coordinate".into()),
+                    }
+                })?;
                 buf.copy_from_slice(&input[(idx * PEL + 128)..(idx * PEL + 160)]);
-                let bby = Fq::from_slice(&buf).unwrap(); //.map_err(|_| Error::Bn128FieldPointNotAMember)?;
+                let bby = Fq::from_slice(&buf).map_err(|_| {
+                    PrecompileFailure::Error {
+                        exit_status: evm::ExitError::Other("Invalid b argument real coeff y coordinate".into()),
+                    }
+                })?;
                 buf.copy_from_slice(&input[(idx * PEL + 160)..(idx * PEL + 192)]);
-                let bbx = Fq::from_slice(&buf).unwrap(); //.map_err(|_| Error::Bn128FieldPointNotAMember)?;
+                let bbx = Fq::from_slice(&buf).map_err(|_| {
+                    PrecompileFailure::Error {
+                        exit_status: evm::ExitError::Other("Invalid b argument real coeff x coordinate".into()),
+                    }
+                })?;
 
                 let a = {
                     if ax.is_zero() && ay.is_zero() {
                         G1::zero()
                     } else {
                         G1::from(
-                            AffineG1::new(ax, ay).unwrap(), //.map_err(|_| Error::Bn128AffineGFailedToCreate)?,
+                            AffineG1::new(ax, ay).map_err(|_| PrecompileFailure::Error {
+                                exit_status: evm::ExitError::Other(
+                                    "Invalid a argument - not on curve".into(),
+                                )
+                            })?
                         )
                     }
                 };
@@ -314,7 +355,11 @@ impl PrecompiledContract for PrecompilePairIstanbul {
                         G2::zero()
                     } else {
                         G2::from(
-                            AffineG2::new(ba, bb).unwrap(), //.map_err(|_| Error::Bn128AffineGFailedToCreate)?,
+                            AffineG2::new(ba, bb).map_err(|_| PrecompileFailure::Error {
+                                exit_status: evm::ExitError::Other(
+                                    "Invalid a argument - not on curve".into(),
+                                )
+                            })?
                         )
                     }
                 };
@@ -435,7 +480,7 @@ impl PrecompiledContract for PrecompileRipemd160Hash {
     }
 
     fn run(&self, input: &[u8]) -> PrecompileResult {
-        glog::info!("input: {:?}", HexBytes::from(input.to_vec()));
+        glog::debug!("input: {:?}", HexBytes::from(input.to_vec()));
         use ripemd160::{Digest, Ripemd160};
         let output = Ripemd160::digest(input).to_vec();
         let mut val = [0_u8; 32];
@@ -462,9 +507,8 @@ impl PrecompiledContract for PrecompileBlake2F {
 
     fn run(&self, input: &[u8]) -> PrecompileResult {
         if input.len() != 213 {
-            return Err(PrecompileFailure::Revert {
-                exit_status: ExitRevert::Reverted,
-                output: "Invalid Length".into(),
+            return Err(PrecompileFailure::Error { 
+                exit_status: evm::ExitError::Other("Invalid input for blake2f precompile: incorrect length".into()),
             });
         }
 
@@ -472,9 +516,8 @@ impl PrecompiledContract for PrecompileBlake2F {
             1 => true,
             0 => false,
             _ => {
-                return Err(PrecompileFailure::Revert {
-                    exit_status: ExitRevert::Reverted,
-                    output: "Invalid Length".into(),
+                return Err(PrecompileFailure::Error {
+                    exit_status: evm::ExitError::Other("Invalid input for blake2f precompile: incorrect final flag".into()),
                 })
             }
         };
@@ -671,15 +714,15 @@ impl PrecompiledContract for PrecompileBigModExp {
         let exponent_length = U256::from(&data[32..64]);
         let modulus_length = U256::from(&data[64..96]);
 
-        if base_length > U256::from(usize::max_value())
-            || exponent_length > U256::from(usize::max_value())
-            || modulus_length > U256::from(usize::max_value())
-        {
-            panic!(
-                "MemoryIndexNotSupported, {}, {}, {}",
-                base_length, exponent_length, modulus_length
-            )
-        }
+        // if base_length > U256::from(usize::max_value())
+        //     || exponent_length > U256::from(usize::max_value())
+        //     || modulus_length > U256::from(usize::max_value())
+        // {
+        //     panic!(
+        //         "MemoryIndexNotSupported, {}, {}, {}",
+        //         base_length, exponent_length, modulus_length
+        //     )
+        // }
 
         let base_length: usize = base_length.as_usize();
         let exponent_length: usize = exponent_length.as_usize();
@@ -690,10 +733,17 @@ impl PrecompiledContract for PrecompileBigModExp {
                 || exponent_length > length_limit
                 || modulus_length > length_limit
             {
-                return Err(PrecompileFailure::Fatal {
-                    exit_status: ExitFatal::Other("ModexpUnsupportedInput".into()),
+                return Err(PrecompileFailure::Error { 
+                    exit_status: evm::ExitError::Other("input length exceed limitation".into()),
                 });
             }
+        }
+
+        if base_length == 0 && modulus_length == 0 {
+            return Ok(PrecompileOutput {
+                exit_status: ExitSucceed::Returned,
+                output: Vec::new(),
+            });
         }
 
         let mut base_arr = Vec::new();
@@ -726,7 +776,11 @@ impl PrecompiledContract for PrecompileBigModExp {
         let exponent = BigUint::from_bytes_be(&exponent_arr);
         let modulus = BigUint::from_bytes_be(&modulus_arr);
 
-        let mut result = base.modpow(&exponent, &modulus).to_bytes_be();
+        let mut result = if modulus.is_zero() || modulus.is_one() {
+            BigUint::zero().to_bytes_be()
+        } else {
+            base.modpow(&exponent, &modulus).to_bytes_be()
+        };
         assert!(result.len() <= modulus_length);
         while result.len() < modulus_length {
             result.insert(0, 0u8);

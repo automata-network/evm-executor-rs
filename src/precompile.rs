@@ -275,7 +275,7 @@ impl PrecompiledContract for PrecompilePairIstanbul {
         if let Some(max_input_num) = self.max_input_num {
             if input.len() > max_input_num * PAIR_ELEMENT_LEN {
                 return Err(PrecompileFailure::Error { 
-                    exit_status: evm::ExitError::Other("bad elliptic curve pairing size, allow at most 4 inputs".into()),
+                    exit_status: evm::ExitError::Other("bad elliptic curve pairing size, the input num exceed limitation".into()),
                 });
             }
         }

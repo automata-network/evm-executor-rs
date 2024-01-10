@@ -1,13 +1,14 @@
-use std::{prelude::v1::*, time::Instant};
+use std::prelude::v1::*;
 
 use base::format::debug;
 use eth_types::{
     BlockHeaderTrait, FetchState, FetchStateResult, ReceiptTrait, Signer, TransactionAccessTuple,
-    TxTrait, SH160, SH256, SU64,
+    TxTrait, SH160, SH256,
 };
 use statedb::StateDB;
 use std::borrow::Cow;
 use std::sync::Arc;
+use std::time::Instant;
 
 use crate::{BlockHashGetter, ExecuteError, ExecuteResult, PrecompileSet, TxContext, TxExecutor};
 

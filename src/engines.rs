@@ -1,6 +1,5 @@
 use std::prelude::v1::*;
 
-use base::format::debug;
 use eth_types::{
     Block, BlockHeader, HexBytes, Receipt, Signer, TransactionInner, Withdrawal, SH160, SH256,
     SU256, SU64, U256,
@@ -95,7 +94,7 @@ impl Engine for Ethereum {
         result: &ExecuteResult,
         tx_idx: usize,
         tx: &Self::Transaction,
-        header: &Self::BlockHeader,
+        _header: &Self::BlockHeader,
     ) -> Self::Receipt {
         let mut receipt = Receipt {
             status: (result.success as u64).into(),
@@ -131,7 +130,7 @@ impl Engine for Ethereum {
 
     fn finalize_block<D: StateDB>(
         &mut self,
-        statedb: &mut D,
+        _statedb: &mut D,
         header: Self::BlockHeader,
         txs: Vec<Arc<Self::Transaction>>,
         receipts: Vec<Self::Receipt>,

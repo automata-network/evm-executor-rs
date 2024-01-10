@@ -1,20 +1,20 @@
-use core::{cmp::Ordering, str::FromStr};
 use std::prelude::v1::*;
 
 use std::collections::BTreeMap;
 
 use crypto::{keccak_hash, secp256k1_ecdsa_recover, sha256_sum};
 use eth_types::{HexBytes, H160, SU256, U256};
+use std::borrow::Cow;
 
 use evm::{
     executor::stack::{
         IsPrecompileResult, PrecompileFailure, PrecompileHandle, PrecompileOutput,
         PrecompileSet as EvmPrecompileSet,
     },
-    ExitFatal, ExitSucceed, ExitRevert,
+    ExitFatal, ExitSucceed,
 };
 use num_bigint::BigUint;
-use num_traits::identities::{Zero, One};
+use num_traits::identities::{One, Zero};
 use std::ops::Deref;
 
 lazy_static::lazy_static! {
@@ -48,10 +48,11 @@ impl PrecompileSet {
         );
         def.add(6, PrecompileAddIstanbul {});
         def.add(7, PrecompileMulIstanbul {});
-        def.add(8, 
+        def.add(
+            8,
             PrecompilePairIstanbul {
                 max_input_num: None,
-            }
+            },
         );
         def.add(9, PrecompileBlake2F {});
 
@@ -77,10 +78,11 @@ impl PrecompileSet {
         );
         def.add(6, PrecompileAddIstanbul {});
         def.add(7, PrecompileMulIstanbul {});
-        def.add(8, 
+        def.add(
+            8,
             PrecompilePairIstanbul {
                 max_input_num: Some(4),
-            }
+            },
         );
         def.add(9, PrecompileRevert {});
 
@@ -265,6 +267,12 @@ pub struct PrecompilePairIstanbul {
     max_input_num: Option<usize>,
 }
 
+fn exit_error(val: Cow<'static, str>) -> PrecompileFailure {
+    PrecompileFailure::Error {
+        exit_status: evm::ExitError::Other(val),
+    }
+}
+
 impl PrecompiledContract for PrecompilePairIstanbul {
     fn required_gas(&self, input: &[u8]) -> u64 {
         45000 + (input.len() / 192) as u64 * 34000
@@ -274,16 +282,14 @@ impl PrecompiledContract for PrecompilePairIstanbul {
 
         if let Some(max_input_num) = self.max_input_num {
             if input.len() > max_input_num * PAIR_ELEMENT_LEN {
-                return Err(PrecompileFailure::Error { 
-                    exit_status: evm::ExitError::Other("bad elliptic curve pairing size, the input num exceed limitation".into()),
-                });
+                return Err(exit_error(
+                    "bad elliptic curve pairing size, the input num exceed limitation".into(),
+                ));
             }
         }
 
         if input.len() % PAIR_ELEMENT_LEN != 0 {
-            return Err(PrecompileFailure::Error { 
-                exit_status: evm::ExitError::Other("bad elliptic curve pairing size".into()),
-            });
+            return Err(exit_error("bad elliptic curve pairing size".into()));
         }
 
         let output = if input.is_empty() {
@@ -298,53 +304,33 @@ impl PrecompiledContract for PrecompilePairIstanbul {
                 let mut buf = [0u8; 32];
 
                 buf.copy_from_slice(&input[(idx * PEL)..(idx * PEL + 32)]);
-                let ax = Fq::from_slice(&buf).map_err(|_| {
-                    PrecompileFailure::Error {
-						exit_status: evm::ExitError::Other("Invalid a argument x coordinate".into()),
-					}
-                })?;
+                let ax = Fq::from_slice(&buf)
+                    .map_err(|_| exit_error("Invalid a argument x coordinate".into()))?;
                 buf.copy_from_slice(&input[(idx * PEL + 32)..(idx * PEL + 64)]);
-                let ay = Fq::from_slice(&buf).map_err(|_| {
-                    PrecompileFailure::Error {
-                        exit_status: evm::ExitError::Other("Invalid a argument y coordinate".into()),
-                    }
-                })?;
+                let ay = Fq::from_slice(&buf)
+                    .map_err(|_| exit_error("Invalid a argument y coordinate".into()))?;
                 buf.copy_from_slice(&input[(idx * PEL + 64)..(idx * PEL + 96)]);
                 let bay = Fq::from_slice(&buf).map_err(|_| {
-                    PrecompileFailure::Error {
-                        exit_status: evm::ExitError::Other("Invalid b argument imaginary coeff y coordinate".into()),
-                    }
+                    exit_error("Invalid b argument imaginary coeff y coordinate".into())
                 })?;
                 buf.copy_from_slice(&input[(idx * PEL + 96)..(idx * PEL + 128)]);
                 let bax = Fq::from_slice(&buf).map_err(|_| {
-                    PrecompileFailure::Error {
-                        exit_status: evm::ExitError::Other("Invalid b argument imaginary coeff x coordinate".into()),
-                    }
+                    exit_error("Invalid b argument imaginary coeff x coordinate".into())
                 })?;
                 buf.copy_from_slice(&input[(idx * PEL + 128)..(idx * PEL + 160)]);
-                let bby = Fq::from_slice(&buf).map_err(|_| {
-                    PrecompileFailure::Error {
-                        exit_status: evm::ExitError::Other("Invalid b argument real coeff y coordinate".into()),
-                    }
-                })?;
+                let bby = Fq::from_slice(&buf)
+                    .map_err(|_| exit_error("Invalid b argument real coeff y coordinate".into()))?;
                 buf.copy_from_slice(&input[(idx * PEL + 160)..(idx * PEL + 192)]);
-                let bbx = Fq::from_slice(&buf).map_err(|_| {
-                    PrecompileFailure::Error {
-                        exit_status: evm::ExitError::Other("Invalid b argument real coeff x coordinate".into()),
-                    }
-                })?;
+                let bbx = Fq::from_slice(&buf)
+                    .map_err(|_| exit_error("Invalid b argument real coeff x coordinate".into()))?;
 
                 let a = {
                     if ax.is_zero() && ay.is_zero() {
                         G1::zero()
                     } else {
-                        G1::from(
-                            AffineG1::new(ax, ay).map_err(|_| PrecompileFailure::Error {
-                                exit_status: evm::ExitError::Other(
-                                    "Invalid a argument - not on curve".into(),
-                                )
-                            })?
-                        )
+                        let g1 = AffineG1::new(ax, ay)
+                            .map_err(|_| exit_error("Invalid a argument - not on curve".into()))?;
+                        G1::from(g1)
                     }
                 };
                 let b = {
@@ -354,13 +340,9 @@ impl PrecompiledContract for PrecompilePairIstanbul {
                     if ba.is_zero() && bb.is_zero() {
                         G2::zero()
                     } else {
-                        G2::from(
-                            AffineG2::new(ba, bb).map_err(|_| PrecompileFailure::Error {
-                                exit_status: evm::ExitError::Other(
-                                    "Invalid a argument - not on curve".into(),
-                                )
-                            })?
-                        )
+                        let g2 = AffineG2::new(ba, bb)
+                            .map_err(|_| exit_error("Invalid a argument - not on curve".into()))?;
+                        G2::from(g2)
                     }
                 };
                 vals.push((a, b))
@@ -496,7 +478,7 @@ impl PrecompiledContract for PrecompileRipemd160Hash {
 pub struct PrecompileBlake2F {}
 
 impl PrecompiledContract for PrecompileBlake2F {
-    fn required_gas(&self, mut input: &[u8]) -> u64 {
+    fn required_gas(&self, input: &[u8]) -> u64 {
         if input.len() != 213 {
             return 0;
         }
@@ -507,18 +489,18 @@ impl PrecompiledContract for PrecompileBlake2F {
 
     fn run(&self, input: &[u8]) -> PrecompileResult {
         if input.len() != 213 {
-            return Err(PrecompileFailure::Error { 
-                exit_status: evm::ExitError::Other("Invalid input for blake2f precompile: incorrect length".into()),
-            });
+            return Err(exit_error(
+                "Invalid input for blake2f precompile: incorrect length".into(),
+            ));
         }
 
         let f = match input[212] {
             1 => true,
             0 => false,
             _ => {
-                return Err(PrecompileFailure::Error {
-                    exit_status: evm::ExitError::Other("Invalid input for blake2f precompile: incorrect final flag".into()),
-                })
+                return Err(exit_error(
+                    "Invalid input for blake2f precompile: incorrect final flag".into(),
+                ))
             }
         };
 
@@ -733,9 +715,7 @@ impl PrecompiledContract for PrecompileBigModExp {
                 || exponent_length > length_limit
                 || modulus_length > length_limit
             {
-                return Err(PrecompileFailure::Error { 
-                    exit_status: evm::ExitError::Other("input length exceed limitation".into()),
-                });
+                return Err(exit_error("input length exceed limitation".into()));
             }
         }
 

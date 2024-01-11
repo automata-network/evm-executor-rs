@@ -8,8 +8,8 @@ license = "Apache-2.0"
 [features]
 default = ["std"]
 
-std = ["base/std", "eth_types/std", "glog/std",  "crypto/std", "statedb/std", "evm/std", "num-bigint/std", "num-traits/std"]
-tstd = ["base/tstd", "eth_types/tstd", "glog/tstd", "crypto/tstd", "statedb/tstd", "evm/tstd", "num-bigint/tstd", "num-traits/tstd"]
+std = ["base/std", "eth_types/std", "glog/std",  "crypto/std", "statedb/std", "evm/std", "num-bigint/std", "num-traits/std", "solidity/std", "serde/std"]
+tstd = ["base/tstd", "eth_types/tstd", "glog/tstd", "crypto/tstd", "statedb/tstd", "evm/tstd", "num-bigint/tstd", "num-traits/tstd", "solidity/tstd", "serde/tstd"]
 
 [dependencies]
 sgxlib = { git = "https://github.com/automata-network/sgxlib", default-features = false }
@@ -19,7 +19,9 @@ glog = { git = "https://github.com/automata-network/glog-rs", default-features =
 crypto = { git = "https://github.com/automata-network/crypto-rs", default-features = false }
 evm = { git = "https://github.com/automata-network/evm-rs", default-features = false }
 statedb = { git = "https://github.com/automata-network/statedb-rs", default-features = false, branch = "v2" }
+solidity = { git = "https://github.com/automata-network/solidity-rs", default-features = false }
 
+serde = { git = "https://github.com/automata-network/sgxlib-thirdparty", default-features = false }
 num-bigint = { git = "https://github.com/automata-network/sgxlib-thirdparty", default-features = false }
 num-traits = { git = "https://github.com/automata-network/sgxlib-thirdparty", default-features = false }
 

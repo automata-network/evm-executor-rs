@@ -775,10 +775,144 @@ impl PrecompiledContract for PrecompileBigModExp {
 
 #[cfg(test)]
 mod test {
+    use std::{io::Read};
+
+    use serde::ser;
+
     use super::*;
 
+    fn test_precompile(precompile: &dyn PrecompiledContract, input: &[u8], expected: &[u8], expected_gas: u64) {
+        let result: HexBytes = precompile
+                .run(&HexBytes::from_hex(input).unwrap())
+                .unwrap()
+                .output
+                .into();
+        let gas = precompile.required_gas(&HexBytes::from_hex(input).unwrap());
+
+        assert_eq!(result, HexBytes::from_hex(expected).unwrap());
+        assert_eq!(gas, expected_gas);
+    }
+
+    fn load_and_test_precompile(precompile: &dyn PrecompiledContract, test_data_path: &str, precompile_name: &str) {
+        // Read testdata from {test_data_path}
+        let mut file = std::fs::File::open(test_data_path).unwrap();        
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf);
+
+        let test_data = buf.as_slice();
+        let test_data_str = std::str::from_utf8(test_data).expect("Invalid UTF-8");
+        let test_data_json = serde_json::from_str::<serde_json::Value>(test_data_str).unwrap();
+        // Iterate over the test cases
+        for (i, test_case) in test_data_json.as_array().unwrap().iter().enumerate() {
+            let input = test_case["Input"].as_str().unwrap().as_bytes();
+            let output = test_case["Expected"].as_str().unwrap();
+            let expected_gas = test_case["Gas"].as_u64().unwrap();
+            test_precompile(precompile, input, output.as_bytes(), expected_gas);
+            glog::info!("[{}] test case {} passed", precompile_name, i);
+        }
+    }
+
+    // Precompile idx: 1
     #[test]
     fn test_ecrecover() {
+        glog::init_test();
+        let contract = PrecompileEcrecover {};
+        load_and_test_precompile(&contract, "src/testdata/ecrecover.json", "ecrecover");
+    }
+
+    // Precompile idx: 2
+    #[test]
+    fn test_sha256() {
+        glog::init_test();
+        let input = HexBytes::from_hex(b"38d18acb67d25c8bb9942764b62f18e17054f66a817bd4295423adf9ed98873e000000000000000000000000000000000000000000000000000000000000001b38d18acb67d25c8bb9942764b62f18e17054f66a817bd4295423adf9ed98873e789d1dd423d25f0772d2748d60f7e4b81bb14d086eba8e8e8efb6dcff8a4ae02").unwrap();
+        let expect = HexBytes::from_hex(b"811c7003375852fabd0d362e40e68607a12bdabae61a7d068fe5fdd1dbbf2a5d").unwrap();
+        let contract = PrecompileSha256Hash {};
+        let result: HexBytes = contract.run(&input).unwrap().output.into();
+        assert_eq!(expect, result);
+        assert_eq!(108, contract.required_gas(&input));
+    }
+
+    // Precompile idx: 3
+    #[test]
+    fn test_ripemd() {
+        glog::init_test();
+        let input = HexBytes::from_hex(b"38d18acb67d25c8bb9942764b62f18e17054f66a817bd4295423adf9ed98873e000000000000000000000000000000000000000000000000000000000000001b38d18acb67d25c8bb9942764b62f18e17054f66a817bd4295423adf9ed98873e789d1dd423d25f0772d2748d60f7e4b81bb14d086eba8e8e8efb6dcff8a4ae02").unwrap();
+        let expect = HexBytes::from_hex(b"0000000000000000000000009215b8d9882ff46f0dfde6684d78e831467f65e6").unwrap();
+        let contract = PrecompileRipemd160Hash {};
+        let result: HexBytes = contract.run(&input).unwrap().output.into();
+        assert_eq!(expect, result);
+        assert_eq!(1080, contract.required_gas(&input));
+    }
+
+    // Precompile idx: 5
+    #[test]
+    fn test_bigmodexp_eip2565() {
+        glog::init_test();
+        let contract = PrecompileBigModExp {
+            eip2565: true,
+            length_limit: None,
+        };
+        load_and_test_precompile(&contract, "src/testdata/modexp_eip2565.json", "modexp_eip2565");
+    }
+
+    // Precompile idx: 6
+    #[test]
+    fn test_add_istanbul() {
+        glog::init_test();
+        let contract = PrecompileAddIstanbul {};
+        load_and_test_precompile(&contract, "src/testdata/bn256add.json", "AddIstanbul");
+    }
+
+    // Precompile idx: 7
+    #[test]
+    fn test_mul_istanbul() {
+        glog::init_test();
+        let contract = PrecompileMulIstanbul {};
+        load_and_test_precompile(&contract, "src/testdata/bn256mul.json", "MulIstanbul");
+    }
+
+    // Precompile idx: 8
+    #[test]
+    fn test_pairing_istanbul() {
+        glog::init_test();
+        let contract = PrecompilePairIstanbul {
+            max_input_num: None,
+        };
+        load_and_test_precompile(&contract, "src/testdata/bn256pairing.json", "PairIstanbul");
+    }
+
+    // Precompile idx: 9
+    #[test]
+    fn test_blake2f() {
+        glog::init_test();
+        let contract = PrecompileBlake2F {};
+        load_and_test_precompile(&contract, "src/testdata/blake2f.json", "Blake2F");
+    }
+
+    #[test]
+    fn test_blake2f_fail() {
+        glog::init_test();
+        let contract = PrecompileBlake2F {};
+
+        let input = HexBytes::from_hex(b"").unwrap();
+        let result = contract.run(&input);
+        assert_eq!(result, Err(PrecompileFailure::Error{exit_status: evm::ExitError::Other("Invalid input for blake2f precompile: incorrect length".into())}));
+
+        let input = HexBytes::from_hex(b"00000c48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b61626300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000001").unwrap();
+        let result = contract.run(&input);
+        assert_eq!(result, Err(PrecompileFailure::Error{exit_status: evm::ExitError::Other("Invalid input for blake2f precompile: incorrect length".into())}));
+
+        let input = HexBytes::from_hex(b"000000000c48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b61626300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000001").unwrap();
+        let result = contract.run(&input);
+        assert_eq!(result, Err(PrecompileFailure::Error{exit_status: evm::ExitError::Other("Invalid input for blake2f precompile: incorrect length".into())}));
+
+        let input = HexBytes::from_hex(b"0000000c48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b61626300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000300000000000000000000000000000002").unwrap();
+        let result = contract.run(&input);
+        assert_eq!(result, Err(PrecompileFailure::Error{exit_status: evm::ExitError::Other("Invalid input for blake2f precompile: incorrect final flag".into())}));
+    }
+
+    #[test]
+    fn test_ecrecover_old() {
         glog::init_test();
         let input = HexBytes::from_hex(b"0x9161131deff2aea942dd43fbce9eb5b409b21670953e583fa10499dc52db57e3000000000000000000000000000000000000000000000000000000000000001bae2054dc5b25097032a64cdda29eb1da01a75ac4297249623bed59a44e91ae4b418e411747af2cd5e7e4a2ba2ed86b1d67ab8dccba4fc2adeab18ad66d8551d7").unwrap();
         let run = PrecompileEcrecover {}.run(&input).unwrap();
@@ -791,7 +925,7 @@ mod test {
     }
 
     #[test]
-    fn test_ripemd() {
+    fn test_ripemd_old() {
         glog::init_test();
         let input  = HexBytes::from_hex(b"0x099538be21d9ee24d052fb9bdc46307416b983d076f3bf04ccbe120ed514ca7589c83b3859bb92919a9d1006fbe59aeac6154321ab0ba37d3490a8c90000").unwrap();
         let result: HexBytes = PrecompileRipemd160Hash {}

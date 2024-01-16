@@ -8,8 +8,8 @@ license = "Apache-2.0"
 [features]
 default = ["std"]
 
-std = ["base/std", "eth_types/std", "glog/std",  "crypto/std", "statedb/std", "evm/std", "num-bigint/std", "num-traits/std", "solidity/std", "serde/std"]
-tstd = ["base/tstd", "eth_types/tstd", "glog/tstd", "crypto/tstd", "statedb/tstd", "evm/tstd", "num-bigint/tstd", "num-traits/tstd", "solidity/tstd", "serde/tstd"]
+std = ["base/std", "eth_types/std", "glog/std",  "crypto/std", "statedb/std", "evm/std", "num-bigint/std", "num-traits/std", "solidity/std", "serde/std", "serde_json/std"]
+tstd = ["base/tstd", "eth_types/tstd", "glog/tstd", "crypto/tstd", "statedb/tstd", "evm/tstd", "num-bigint/tstd", "num-traits/tstd", "solidity/tstd", "serde/tstd", "serde_json/tstd"]
 
 [dependencies]
 sgxlib = { git = "https://github.com/automata-network/sgxlib", default-features = false }
@@ -22,6 +22,7 @@ statedb = { git = "https://github.com/automata-network/statedb-rs", default-feat
 solidity = { git = "https://github.com/automata-network/solidity-rs", default-features = false }
 
 serde = { git = "https://github.com/automata-network/sgxlib-thirdparty", default-features = false }
+serde_json = { git = "https://github.com/automata-network/sgxlib-thirdparty", default-features = false }
 num-bigint = { git = "https://github.com/automata-network/sgxlib-thirdparty", default-features = false }
 num-traits = { git = "https://github.com/automata-network/sgxlib-thirdparty", default-features = false }
 
